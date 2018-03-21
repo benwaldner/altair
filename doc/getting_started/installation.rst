@@ -44,7 +44,7 @@ run the following::
     requires a slightly different setup. See :ref:`displaying-charts` for
     details.
 
-Once altair and Jupyterlab are installed, launch Jupyterlab by running::
+Once altair and Jupyterlab are installed, launch JupyterLab by running::
 
     $ jupyter lab
 

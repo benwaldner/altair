@@ -10,8 +10,34 @@ import tempfile
 
 import six
 
-from .importing import attempt_import
 from .core import write_file_or_filename
+from ._py3k_compat import urlopen, HTTPError, URLError
+
+try:
+    from selenium import webdriver
+except ImportError:
+    webdriver = None
+
+try:
+    from selenium.webdriver.chrome.options import Options as ChromeOptions
+except ImportError:
+    ChromeOptions = None
+
+
+def connection_ok():
+    """Check web connection.
+    Returns True if web connection is OK, False otherwise.
+    """
+    try:
+        urlopen('http://vega.github.io', timeout=1)
+    except HTTPError:
+        # connection works, but there's an HTTP error
+        return True
+    except URLError:
+        # This is raised if there is no internet connection
+        return False
+    else:
+        return True
 
 
 HTML_TEMPLATE = """
@@ -108,10 +134,10 @@ def save_spec(spec, fp, mode=None, format=None, driver_timeout=10):
     if format not in ['png', 'svg']:
         raise NotImplementedError("save_spec only supports 'svg' and 'png'")
 
-    webdriver = attempt_import('selenium.webdriver',
-                               'save_spec requires the selenium package')
-    Options = attempt_import('selenium.webdriver.chrome.options',
-                             'save_spec requires the selenium package').Options
+    if webdriver is None:
+        raise ImportError("selenium package is required for saving chart as {0}".format(format))
+    if ChromeOptions is None:
+        raise ImportError("chromedriver is required for saving chart as {0}".format(format))
 
     if mode is None:
         if '$schema' in spec:
@@ -122,8 +148,11 @@ def save_spec(spec, fp, mode=None, format=None, driver_timeout=10):
         raise ValueError("mode must be 'vega' or 'vega-lite'")
 
     try:
-        chrome_options = Options()
+        chrome_options = ChromeOptions()
         chrome_options.add_argument("--headless")
+        if os.geteuid() == 0:
+            chrome_options.add_argument('--no-sandbox')
+            
         driver = webdriver.Chrome(chrome_options=chrome_options)
         driver.set_page_load_timeout(driver_timeout)
 
@@ -132,6 +161,9 @@ def save_spec(spec, fp, mode=None, format=None, driver_timeout=10):
             with open(htmlfile, 'w') as f:
                 f.write(HTML_TEMPLATE)
             driver.get("file://" + htmlfile)
+            online = driver.execute_script("return navigator.onLine")
+            if not online:
+                raise ValueError("Internet connection required for saving chart as {0}".format(format))
             render = driver.execute_async_script(EXTRACT_CODE[format],
                                                  spec, mode)
         finally:

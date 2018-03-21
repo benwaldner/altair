@@ -8,7 +8,7 @@ import pandas as pd
 from .schema import core, channels, mixins, Undefined
 
 from .data import data_transformers, pipe
-from ... import utils
+from ... import utils, expr
 from .display import renderers
 
 
@@ -49,24 +49,6 @@ class SelectionMapping(core.VegaLiteSchema):
     }
     _rootschema = core.Root._schema
 
-    def ref(self, name=None):
-        """Return a named selection reference.
-
-        If the mapping contains only one selection, then the name need not
-        be specified.
-        """
-        if name is None and len(self._kwds) == 1:
-            name = list(self._kwds.keys())[0]
-        if name not in self._kwds:
-            raise ValueError("'{0}' is not a valid selection name "
-                             "in this mapping".format(name))
-        return {"selection": name}
-
-    def _get_name(self):
-        if len(self._kwds) != 1:
-            raise ValueError("Selection Mapping has more than one name")
-        return next(iter(self._kwds))
-
     def __add__(self, other):
         if isinstance(other, SelectionMapping):
             copy = self.copy()
@@ -82,6 +64,34 @@ class SelectionMapping(core.VegaLiteSchema):
         else:
             return NotImplemented
 
+
+class NamedSelection(SelectionMapping):
+    """A SelectionMapping with a single named selection item"""
+    _schema = {
+        'type': 'object',
+        'additionalPropeties': {'$ref': '#/definitions/SelectionDef'},
+        'minProperties': 1, 'maxProperties': 1
+    }
+    _rootschema = core.Root._schema
+
+    def _get_name(self):
+        if len(self._kwds) != 1:
+            raise ValueError("NamedSelection has multiple properties")
+        return next(iter(self._kwds))
+
+    def ref(self, name=None):
+        """Return a named selection reference.
+
+        If the mapping contains only one selection, then the name need not
+        be specified.
+        """
+        if name is None:
+            name = self._get_name()
+        if name not in self._kwds:
+            raise ValueError("'{0}' is not a valid selection name "
+                             "in this mapping".format(name))
+        return {"selection": name}
+
     def __invert__(self):
         return core.SelectionNot(**{'not': self._get_name()})
 
@@ -95,6 +105,14 @@ class SelectionMapping(core.VegaLiteSchema):
             other = other._get_name()
         return core.SelectionOr(**{'or': [self._get_name(), other]})
 
+    def __add__(self, other):
+        copy = SelectionMapping(**self._kwds)
+        copy += other
+        return copy
+
+    def __iadd__(self, other):
+        return NotImplemented
+
 #------------------------------------------------------------------------
 # Top-Level Functions
 
@@ -103,7 +121,7 @@ def value(value, **kwargs):
     return dict(value=value, **kwargs)
 
 
-def selection(name=None, **kwds):
+def selection(name=None, type=Undefined, **kwds):
     """Create a named selection.
 
     Parameters
@@ -111,38 +129,39 @@ def selection(name=None, **kwds):
     name : string (optional)
         The name of the selection. If not specified, a unique name will be
         created.
+    type : string
+        The type of the selection: one of ["interval", "single", or "multi"]
     **kwds :
         additional keywords will be used to construct a SelectionDef instance
         that controls the selection.
 
     Returns
     -------
-    selection: SelectionMapping
-        The SelectionMapping object that can be used in chart creation.
+    selection: NamedSelection
+        The selection object that can be used in chart creation.
     """
     if name is None:
         name = "selector{0:03d}".format(selection.counter)
         selection.counter += 1
-    return SelectionMapping(**{name: core.SelectionDef(**kwds)})
+    return NamedSelection(**{name: core.SelectionDef(type=type, **kwds)})
 
 selection.counter = 1
 
-
 @utils.use_signature(core.IntervalSelection)
 def selection_interval(**kwargs):
-    """A selection with type='interval'"""
+    """Create a selection with type='interval'"""
     return selection(type='interval', **kwargs)
 
 
 @utils.use_signature(core.MultiSelection)
 def selection_multi(**kwargs):
-    """A selection with type='multi'"""
+    """Create a selection with type='multi'"""
     return selection(type='multi', **kwargs)
 
 
 @utils.use_signature(core.SingleSelection)
 def selection_single(**kwargs):
-    """A selection with type='single'"""
+    """Create a selection with type='single'"""
     return selection(type='single', **kwargs)
 
 
@@ -181,7 +200,7 @@ def condition(predicate, if_true, if_false, **kwargs):
 
     Parameters
     ----------
-    predicate: SelectionMapping, LogicalOperandPredicate, dict, or string
+    predicate: NamedSelection, LogicalOperandPredicate, expr.Expression, dict, or string
         the selection predicate or test predicate for the condition.
         if a string is passed, it will be treated as a test operand.
     if_true:
@@ -198,11 +217,11 @@ def condition(predicate, if_true, if_false, **kwargs):
     """
     selection_predicates = (core.SelectionNot, core.SelectionOr,
                             core.SelectionAnd, core.SelectionOperand)
-    test_predicates = (six.string_types, core.Predicate,
+    test_predicates = (six.string_types, expr.Expression, core.Predicate,
                        core.LogicalOperandPredicate, core.LogicalNotPredicate,
                        core.LogicalOrPredicate, core.LogicalAndPredicate)
 
-    if isinstance(predicate, SelectionMapping):
+    if isinstance(predicate, NamedSelection):
         condition = {'selection': predicate._get_name()}
     elif isinstance(predicate, selection_predicates):
         condition = {'selection': predicate}
@@ -507,11 +526,16 @@ class TopLevelMixin(mixins.ConfigMethodMixin):
         """
         return self._add_transform(core.FilterTransform(filter=filter, **kwargs))
 
-    def transform_lookup(self, from_=Undefined, lookup=Undefined, default=Undefined, **kwargs):
+    def transform_lookup(self, as_=Undefined, from_=Undefined, lookup=Undefined, default=Undefined, **kwargs):
         """Add a LookupTransform to the schema
 
         Attributes
         ----------
+        as_ : string or List(string)
+            The field or fields for storing the computed formula value.
+            If `from.fields` is specified, the transform will use the same names for `as`.
+            If `from.fields` is not specified, `as` has to be a string and we put
+            the whole object into the data under the specified name.
         from_ : LookupData
             Secondary data reference.
         lookup : string
@@ -528,6 +552,10 @@ class TopLevelMixin(mixins.ConfigMethodMixin):
         --------
         alt.LookupTransform : underlying transform object
         """
+        if as_ is not Undefined:
+            if 'as' in kwargs:
+                raise ValueError("transform_lookup: both 'as_' and 'as' passed as arguments.")
+            kwargs['as'] = as_
         if from_ is not Undefined:
             if 'from' in kwargs:
                 raise ValueError("transform_lookup: both 'from_' and 'from' passed as arguments.")
@@ -569,6 +597,9 @@ class TopLevelMixin(mixins.ConfigMethodMixin):
     @utils.use_signature(core.Resolve)
     def _set_resolve(self, **kwargs):
         """Copy the chart and update the resolve property with kwargs"""
+        if not hasattr(self, 'resolve'):
+            raise ValueError("{0} object has no attribute "
+                             "'resolve'".format(self.__class__))
         copy = self.copy()
         if copy.resolve is Undefined:
             copy.resolve = core.Resolve()
