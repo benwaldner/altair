@@ -85,9 +85,14 @@ Installing Altair with Jupyter Notebook
 This section details how to install Altair for use with Jupyter Notebook.
 To install Altair for use with the JupyterLab, see :ref:`installation-jupyterlab`.
 
+.. warning::
+
+   conda installation is not yet available for the version 2.0 release
+   candidate. Please install the release candidate with pip.
+
 Both Altair and Jupyter Notebook can be installed with ``pip``::
 
-    $ pip install altair notebook
+    $ pip install altair==2.0.0rc1 notebook
 
 or with ``conda``::
 
