@@ -1879,3 +1879,27 @@ def topo_feature(url, feature, **kwargs):
     """
     return core.UrlData(url=url, format=core.TopoDataFormat(type='topojson',
                                                          feature=feature, **kwargs))
+
+
+
+
+
+def _consolidate_data_for_compound_chart(data, subcharts):
+    def remove_data(subchart):
+        subchart = subchart.copy()
+        subchart.data = Undefined
+        return subchart
+
+    if not subcharts:
+        return data, subcharts
+    if data is Undefined:
+        # Top level has no data; all subchart data must
+        # be identical to proceed.
+        reference = subcharts[0].data
+        if reference is not Undefined and all(c.data is reference for c in subcharts):
+            data = reference
+            subcharts = [remove_data(c) for c in subcharts]
+        return data, subcharts
+    else:
+        # Top level has data; subchart data must be either
+        # undefined or identical to this to proceed.
